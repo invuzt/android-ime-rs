@@ -282,6 +282,16 @@ public class ImeView extends View {
             }
 
             @Override
+            public boolean setSelection(int start, int end) {
+                return ensureActive(false, (id) -> {
+                    if (DEBUG) {
+                        Log.d(INNER_TAG, "setSelection: start = $start, end = $end");
+                    }
+                    return nativeSetSelection(id, start, end);
+                });
+            }
+
+            @Override
             public boolean setComposingRegion(int start, int end) {
                 return ensureActive(false, (id) -> {
                     if (DEBUG) {
@@ -301,16 +311,6 @@ public class ImeView extends View {
                         Log.d(INNER_TAG, "setComposingText: text = $text, newCursorPosition = $newCursorPosition");
                     }
                     return nativeSetComposingText(id, text.toString(), newCursorPosition);
-                });
-            }
-
-            @Override
-            public boolean setSelection(int start, int end) {
-                return ensureActive(false, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "setSelection: start = $start, end = $end");
-                    }
-                    return nativeSetSelection(id, start, end);
                 });
             }
 

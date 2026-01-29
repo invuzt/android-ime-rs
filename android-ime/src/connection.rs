@@ -6,35 +6,13 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
+use crate::handler::AndroidImeConnectionHandler;
 
 ////////////////////////////////////////////////////////////////////////////////
 static HANDLERS: LazyLock<Mutex<HashMap<u64, Arc<dyn AndroidImeConnectionHandler>>>> = LazyLock::new(Mutex::default);
 
 pub(crate) fn find_handler(id: u64) -> Option<Arc<dyn AndroidImeConnectionHandler>> {
     HANDLERS.lock().get(&id).cloned()
-}
-
-////////////////////////////////////////////////////////////////////////////////
-pub trait AndroidImeConnectionHandler: 'static + Send + Sync {
-    fn connection_closed(&self);
-    fn send_key_event(&self, key_code: i32) -> bool;
-    fn perform_context_menu_action(&self, action_id: i32) -> bool;
-    fn perform_editor_action(&self, editor_action: i32) -> bool;
-
-    fn commit_text(&self, text: &str, new_cursor_position: i32) -> bool;
-    fn delete_surrounding_text(&self, before: usize, after: usize) -> bool;
-    fn delete_surrounding_text_in_code_points(&self, before: usize, after: usize) -> bool;
-
-    fn set_selection(&self, start: usize, end: usize) -> bool;
-    fn set_composing_region(&self, start: usize, end: usize) -> bool;
-    fn set_composing_text(&self, input: &str, new_cursor_position: i32) -> bool;
-    fn finish_composing_text(&self) -> bool;
-
-    fn get_selected_text(&self, flags: i32) -> Option<&str>;
-    fn get_text_after_cursor(&self, count: usize, flags: i32) -> Option<&str>;
-    fn get_text_before_cursor(&self, count: usize, flags: i32) -> Option<&str>;
-    fn get_cursor_caps_mode(&self, req_modes: i32) -> i32;
-    fn request_cursor_updates(&self, cursor_update_mode: i32) -> bool;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

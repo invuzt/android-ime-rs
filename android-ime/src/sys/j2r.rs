@@ -1,7 +1,8 @@
-use crate::connection::{find_handler, AndroidImeConnectionHandler};
+use crate::connection::find_handler;
 use jni::objects::*;
 use jni::sys::{jboolean, jint, jlong, jstring, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
+use crate::handler::AndroidImeConnectionHandler;
 
 ////////////////////////////////////////////////////////////////////////////////
 #[unsafe(no_mangle)]

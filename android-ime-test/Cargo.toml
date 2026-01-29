@@ -1,0 +1,27 @@
+[package]
+name = "android-ime-test"
+version = { workspace = true }
+edition = { workspace = true }
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+android-ime = { path = "../android-ime" }
+
+jni = { workspace = true }
+log = { workspace = true }
+anyhow = { workspace = true }
+
+winit = "0.30.12"
+android_logger = "0.15.1"
+
+[dependencies.eframe]
+version = "0.33.3"
+default-features = false
+features = [
+    "default_fonts",
+    "glow",
+    "android-native-activity",
+]

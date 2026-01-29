@@ -1,0 +1,10 @@
+[package]
+name = "android-ime"
+version = { workspace = true }
+edition = { workspace = true }
+
+[dependencies]
+jni = { workspace = true }
+log = { workspace = true }
+parking_lot = { workspace = true }
+anyhow = { workspace = true }

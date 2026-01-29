@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = [
+    "android-ime",
+    "android-ime-test",
+]
+
+[workspace.package]
+name = "android-ime-rs"
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+jni = "0.21.1"
+log = "0.4.29"
+parking_lot = "0.12.5"
+anyhow = "1.0.100"

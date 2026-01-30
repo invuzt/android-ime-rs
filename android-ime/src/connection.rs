@@ -1,51 +1,62 @@
-use crate::sys::JImeView;
-use jni::objects::JObject;
-use jni::JNIEnv;
-use parking_lot::Mutex;
-use std::collections::HashMap;
+use crate::context::AndroidImeContext;
+use crate::handler::registry::AndroidImeConnectionRegistry;
+use crate::handler::AndroidImeConnectionHandler;
+use log::error;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
-use crate::handler::AndroidImeConnectionHandler;
-
-////////////////////////////////////////////////////////////////////////////////
-static HANDLERS: LazyLock<Mutex<HashMap<u64, Arc<dyn AndroidImeConnectionHandler>>>> = LazyLock::new(Mutex::default);
-
-pub(crate) fn find_handler(id: u64) -> Option<Arc<dyn AndroidImeConnectionHandler>> {
-    HANDLERS.lock().get(&id).cloned()
-}
+use std::sync::Arc;
 
 ////////////////////////////////////////////////////////////////////////////////
 pub struct AndroidImeConnection<T> {
     id: u64,
-    view: JImeView,
     handler: Arc<T>,
+    context: Option<AndroidImeContext>,
 }
 
-impl<T: AndroidImeConnectionHandler> AndroidImeConnection<T> {
-    pub fn new<'a>(env: &mut JNIEnv<'a>, activity: &JObject<'a>, handler: T) -> anyhow::Result<Self> {
+impl<T> AndroidImeConnection<T> {
+    pub fn open<'a>(context: &AndroidImeContext, handler: T) -> anyhow::Result<Self>
+    where
+        T: AndroidImeConnectionHandler,
+    {
         static ID: AtomicU64 = AtomicU64::new(0);
 
-        let view = JImeView::from(env, activity)?;
         let id = ID.fetch_add(1, Ordering::Relaxed);
         let handler = Arc::new(handler);
-        HANDLERS.lock().insert(id, handler.clone());
+        AndroidImeConnectionRegistry::get().register(id, handler.clone());
 
-        Ok(AndroidImeConnection { id, view, handler })
+        context.view.activate(id)?;
+
+        Ok(AndroidImeConnection {
+            id,
+            handler,
+            context: Some(context.clone()),
+        })
     }
 
-    pub fn activate(&self) -> anyhow::Result<()> {
-        self.view.activate(self.id)
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
-    pub fn deactivate(&self) -> anyhow::Result<()> {
-        self.view.deactivate(self.id)
+    pub fn detach(mut self) -> anyhow::Result<()> {
+        self.detach_private()
+    }
+
+    fn detach_private(&mut self) -> anyhow::Result<()> {
+        let Some(context) = self.context.take() else {
+            return Ok(());
+        };
+
+        AndroidImeConnectionRegistry::get().unregister(self.id);
+
+        context.view.deactivate(self.id)
     }
 }
 
 impl<T> Drop for AndroidImeConnection<T> {
     fn drop(&mut self) {
-        HANDLERS.lock().remove(&self.id);
+        if let Err(e) = self.detach_private() {
+            error!("failed to deactivate IME connection: {e:?}");
+        }
     }
 }
 

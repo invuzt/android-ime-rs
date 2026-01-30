@@ -1,4 +1,6 @@
-use android_ime::{AndroidImeConnection, AndroidImeConnectionHandler};
+use android_ime::{
+    AndroidImeConnection, AndroidImeConnectionHandler, AndroidImeContext, AndroidImeEditable, AndroidImeEditableHandler,
+};
 use anyhow::anyhow;
 use eframe::egui::{Align, CentralPanel, Context, FontFamily, FontId, Layout, RichText};
 use eframe::emath::Vec2;
@@ -6,6 +8,7 @@ use eframe::Frame;
 use jni::objects::JObject;
 use jni::JavaVM;
 use log::{error, info};
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use winit::platform::android::activity::AndroidApp;
 
@@ -41,21 +44,23 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
         "AndroidIme Test App",
         options,
         Box::new(move |cc| {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let handler = Handler {
-                tx,
-                context: cc.egui_ctx.clone(),
-            };
+            struct Handler(Context);
+
+            impl AndroidImeEditableHandler for Handler {
+                fn text_updated(&self) {
+                    self.0.request_repaint();
+                }
+            }
 
             let mut env = java_wm.attach_current_thread()?;
-            let ime_connection = AndroidImeConnection::new(&mut env, &activity, handler)?;
+            let context = AndroidImeContext::new(&mut env, &activity)?;
+            let editable = AndroidImeEditable::new(&context, Handler(cc.egui_ctx.clone()));
 
             cc.egui_ctx.set_zoom_factor(scale_factor);
 
             Ok(Box::new(MyApp {
-                rx,
                 log: Default::default(),
-                ime_connection,
+                editable,
             }))
         }),
     );
@@ -64,18 +69,17 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
 
 ////////////////////////////////////////////////////////////////////////////////
 pub struct MyApp {
-    rx: std::sync::mpsc::Receiver<String>,
     log: VecDeque<String>,
-    ime_connection: AndroidImeConnection<Handler>,
+    editable: AndroidImeEditable,
 }
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &Context, frame: &mut Frame) {
         let _ = frame;
 
-        while let Ok(message) = self.rx.try_recv() {
-            self.log.push_front(message);
-        }
+        // while let Ok(message) = self.rx.try_recv() {
+        //     self.log.push_front(message);
+        // }
 
         while self.log.len() > 20 {
             self.log.pop_back();
@@ -86,19 +90,21 @@ impl eframe::App for MyApp {
                 ui.add_space(16.0);
 
                 if ui.button("Show IME").clicked() {
-                    if let Err(e) = self.ime_connection.activate() {
+                    if let Err(e) = self.editable.show_soft_keyboard() {
                         self.log.push_front(e.to_string());
                     }
                 }
 
                 if ui.button("Hide IME").clicked() {
-                    if let Err(e) = self.ime_connection.deactivate() {
+                    if let Err(e) = self.editable.hide_soft_keyboard() {
                         self.log.push_front(e.to_string());
                     }
                 }
 
                 ui.with_layout(Layout::top_down(Align::Min), |ui| {
                     ui.spacing_mut().item_spacing = Vec2::ZERO;
+
+                    ui.label(format!("Text: {}", self.editable.content().text));
 
                     for message in self.log.iter() {
                         ui.label(RichText::new(message).font(FontId::new(5.0, FontFamily::Monospace)));
@@ -143,7 +149,17 @@ impl AndroidImeConnectionHandler for Handler {
         true
     }
 
-    fn commit_text(&self, text: &str, new_cursor_position: i32) -> bool {
+    fn begin_batch_edit(&self) -> bool {
+        self.log(format!("begin_batch_edit"));
+        true
+    }
+
+    fn end_batch_edit(&self) -> bool {
+        self.log(format!("end_batch_edit"));
+        true
+    }
+
+    fn commit_text(&self, text: &str, new_cursor_position: isize) -> bool {
         self.log(format!("commit_text: {text}, {new_cursor_position}"));
         true
     }
@@ -168,7 +184,7 @@ impl AndroidImeConnectionHandler for Handler {
         true
     }
 
-    fn set_composing_text(&self, input: &str, new_cursor_position: i32) -> bool {
+    fn set_composing_text(&self, input: &str, new_cursor_position: isize) -> bool {
         self.log(format!("set_composing_text: {input}, {new_cursor_position}"));
         true
     }
@@ -178,18 +194,18 @@ impl AndroidImeConnectionHandler for Handler {
         true
     }
 
-    fn get_selected_text(&self, flags: i32) -> Option<&str> {
-        self.log(format!("get_selected_text: {flags}"));
+    fn get_selected_text(&self) -> Option<Cow<'_, str>> {
+        self.log(format!("get_selected_text"));
         None
     }
 
-    fn get_text_after_cursor(&self, count: usize, flags: i32) -> Option<&str> {
-        self.log(format!("get_text_after_cursor: {count} {flags}"));
+    fn get_text_after_cursor(&self, count: usize) -> Option<Cow<'_, str>> {
+        self.log(format!("get_text_after_cursor: {count}"));
         None
     }
 
-    fn get_text_before_cursor(&self, count: usize, flags: i32) -> Option<&str> {
-        self.log(format!("get_text_before_cursor: {count} {flags}"));
+    fn get_text_before_cursor(&self, count: usize) -> Option<Cow<'_, str>> {
+        self.log(format!("get_text_before_cursor: {count}"));
         None
     }
 

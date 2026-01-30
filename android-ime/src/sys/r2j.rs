@@ -4,10 +4,12 @@ use jni::signature::{Primitive, ReturnType};
 use jni::{JNIEnv, JavaVM, NativeMethod};
 use log::debug;
 use parking_lot::{const_mutex, Mutex};
+use std::ops::Range;
 use std::os::raw::c_void;
 use std::sync::Arc;
 
 ////////////////////////////////////////////////////////////////////////////////
+#[derive(Clone)]
 pub struct JImeView {
     jni: Arc<JImeViewJni>,
     object: GlobalRef,
@@ -35,7 +37,7 @@ impl JImeView {
     }
 
     ////////////////////////////////////////////////////////////////////////////////
-    pub fn activate<'a>(&self, id: u64) -> anyhow::Result<()> {
+    pub fn activate(&self, id: u64) -> anyhow::Result<()> {
         debug!("JImeView::activate: id = {id}");
 
         let mut env = self.jni.java_vm.attach_current_thread()?;
@@ -51,7 +53,7 @@ impl JImeView {
     }
 
     ////////////////////////////////////////////////////////////////////////////////
-    pub fn deactivate<'a>(&self, id: u64) -> anyhow::Result<()> {
+    pub fn deactivate(&self, id: u64) -> anyhow::Result<()> {
         debug!("JImeView::deactivate: id = {id}");
 
         let mut env = self.jni.java_vm.attach_current_thread()?;
@@ -65,6 +67,34 @@ impl JImeView {
         };
         Ok(())
     }
+
+    ////////////////////////////////////////////////////////////////////////////////
+    pub fn update_selection(
+        &self,
+        id: u64,
+        selection: Range<usize>,
+        composition: Option<Range<usize>>,
+    ) -> anyhow::Result<()> {
+        debug!("JImeView::update_selection: id = {id}, selection = {selection:?}, composition = {composition:?}");
+
+        let mut env = self.jni.java_vm.attach_current_thread()?;
+        unsafe {
+            let composition = composition.unwrap_or_default();
+            env.call_method_unchecked(
+                &self.object,
+                self.jni.m_update_selection,
+                ReturnType::Primitive(Primitive::Void),
+                &[
+                    JValue::from(id.cast_signed()).as_jni(),
+                    JValue::from(selection.start as i32).as_jni(),
+                    JValue::from(selection.end as i32).as_jni(),
+                    JValue::from(composition.start as i32).as_jni(),
+                    JValue::from(composition.end as i32).as_jni(),
+                ],
+            )?
+        };
+        Ok(())
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -74,6 +104,7 @@ struct JImeViewJni {
     m_from: JStaticMethodID,
     m_activate: JMethodID,
     m_deactivate: JMethodID,
+    m_update_selection: JMethodID,
 }
 
 impl JImeViewJni {
@@ -120,12 +151,17 @@ impl JImeViewJni {
         let m_deactivate = env.get_method_id(&c_ImeView, "deactivate", "(J)V")?;
         debug!("ImeView::deactivate = {m_deactivate:?}");
 
+        debug!("loading ImeView::updateSelection method");
+        let m_update_selection = env.get_method_id(&c_ImeView, "updateSelection", "(JIIII)V")?;
+        debug!("ImeView::updateSelection = {m_deactivate:?}");
+
         let this = Self {
             java_vm: env.get_java_vm()?,
             class: env.new_global_ref(c_ImeView)?,
             m_from,
             m_activate,
             m_deactivate,
+            m_update_selection,
         };
         Ok(lock.insert(Arc::new(this)).clone())
     }
@@ -195,6 +231,16 @@ impl JImeViewJni {
             ////////////////////////////////////////////////////////////////////////////////
             // Text editing methods
             native_method! {
+                "nativeBeginBatchEdit",
+                "(J)Z",
+                Java_dev_matrix_rust_ime_glue_ImeView_nativeBeginBatchEdit
+            },
+            native_method! {
+                "nativeEndBatchEdit",
+                "(J)Z",
+                Java_dev_matrix_rust_ime_glue_ImeView_nativeEndBatchEdit
+            },
+            native_method! {
                 "nativeCommitText",
                 "(JLjava/lang/String;I)Z",
                 Java_dev_matrix_rust_ime_glue_ImeView_nativeCommitText
@@ -233,17 +279,17 @@ impl JImeViewJni {
             // Text getter methods
             native_method! {
                 "nativeGetSelectedText",
-                "(JI)Ljava/lang/String;",
+                "(J)Ljava/lang/String;",
                 Java_dev_matrix_rust_ime_glue_ImeView_nativeGetSelectedText
             },
             native_method! {
                 "nativeGetTextAfterCursor",
-                "(JII)Ljava/lang/String;",
+                "(JI)Ljava/lang/String;",
                 Java_dev_matrix_rust_ime_glue_ImeView_nativeGetTextAfterCursor
             },
             native_method! {
                 "nativeGetTextBeforeCursor",
-                "(JII)Ljava/lang/String;",
+                "(JI)Ljava/lang/String;",
                 Java_dev_matrix_rust_ime_glue_ImeView_nativeGetTextBeforeCursor
             },
             native_method! {

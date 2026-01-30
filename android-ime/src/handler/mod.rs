@@ -1,3 +1,7 @@
+use std::borrow::Cow;
+
+pub mod registry;
+
 ////////////////////////////////////////////////////////////////////////////////
 pub trait AndroidImeConnectionHandler: 'static + Send + Sync {
     /// Called by the system up to only once to notify that the system is about
@@ -32,12 +36,47 @@ pub trait AndroidImeConnectionHandler: 'static + Send + Sync {
     /// - android.R.id.paste
     /// - android.R.id.copyUrl
     /// - android.R.id.switchInputMethod
-    fn perform_context_menu_action(&self, action_id: i32) -> bool;
+    fn perform_context_menu_action(&self, action: i32) -> bool;
 
     /// Have the editor perform an action it has said it can do.
     ///
     /// This is typically used by IMEs when the user presses the key associated with the action.
-    fn perform_editor_action(&self, editor_action: i32) -> bool;
+    fn perform_editor_action(&self, action: i32) -> bool;
+
+    /// Tell the editor that you are starting a batch of editor
+    /// operations. The editor will try to avoid sending you updates
+    /// about its state until {@link #endBatchEdit} is called. Batch
+    /// edits nest.
+    ///
+    /// <strong>IME authors:</strong> use this to avoid getting
+    /// calls to
+    /// [InputMethodService#onUpdateSelection(int, int, int, int, int, int)]
+    /// corresponding to the intermediate state. Also, use this to avoid
+    /// flickers that may arise from displaying intermediate state. Be
+    /// sure to call [endBatchEdit()] for each call to this, or
+    /// you may block updates in the editor.
+    ///
+    /// <strong>Editor authors:</strong> while a batch edit is in
+    /// progress, take care not to send updates to the input method and
+    /// not to update the display. IMEs use this intensively to this
+    /// effect. Also, please note that batch edits need to nest
+    /// correctly.
+    fn begin_batch_edit(&self) -> bool;
+
+    /// Tell the editor that you are done with a batch edit previously initiated with
+    /// [beginBatchEdit()]. This ends the latest batch only.
+    ///
+    /// <strong>IME authors:</strong> make sure you call this exactly once for each call to
+    /// [beginBatchEdit()].
+    ///
+    /// <strong>Editor authors:</strong> please be careful about batch edit nesting. Updates still
+    /// to be held back until the end of the last batch edit.  In case you are delegating this API
+    /// call to the one obtained from
+    /// [EditText#onCreateInputConnection(EditorInfo)], there was an off-by-one
+    /// that had returned `true` when its nested batch edit count becomes `0` as a result
+    /// of invoking this API.  This bug is fixed in [Build.VERSION_CODES#TIRAMISU].
+    /// 
+    fn end_batch_edit(&self) -> bool;
 
     /// Commit text to the text box and set the new cursor position.
     ///
@@ -53,7 +92,7 @@ pub trait AndroidImeConnectionHandler: 'static + Send + Sync {
     /// changes known to the input method by calling
     /// [InputMethodManager.updateSelection(View, int, int, int, int)],
     /// but be careful to wait until the batch edit is over if one is in progress.
-    fn commit_text(&self, text: &str, new_cursor_position: i32) -> bool;
+    fn commit_text(&self, text: &str, new_cursor_position: isize) -> bool;
 
     /// Delete beforeLength characters of text before the current cursor position,
     /// and delete afterLength characters of text after the current cursor position,
@@ -175,7 +214,7 @@ pub trait AndroidImeConnectionHandler: 'static + Send + Sync {
     /// within the composing text in a subsequent call so you should
     /// make no assumption at all: the composing text and the selection
     /// are entirely independent.
-    fn set_composing_text(&self, input: &str, new_cursor_position: i32) -> bool;
+    fn set_composing_text(&self, text: &str, new_cursor_position: isize) -> bool;
 
     /// Have the text editor finish whatever composing text is
     /// currently active. This simply leaves the text as-is, removing
@@ -216,7 +255,7 @@ pub trait AndroidImeConnectionHandler: 'static + Send + Sync {
     /// to the text or change the selection position and use this
     /// method right away; you need to make sure the returned value is
     /// consistent with the results of the latest edits.
-    fn get_selected_text(&self, flags: i32) -> Option<&str>;
+    fn get_selected_text(&self) -> Option<Cow<'_, str>>;
 
     /// Get <var>n</var> characters of text after the current cursor
     /// position.
@@ -250,7 +289,7 @@ pub trait AndroidImeConnectionHandler: 'static + Send + Sync {
     /// functions: you should not, for example, limit the returned value to
     /// the current line, and specifically do not return 0 characters unless
     /// the cursor is really at the end of the text.
-    fn get_text_after_cursor(&self, count: usize, flags: i32) -> Option<&str>;
+    fn get_text_after_cursor(&self, count: usize) -> Option<Cow<'_, str>>;
 
     /// Get <var>n</var> characters of text before the current cursor
     /// position.
@@ -285,7 +324,7 @@ pub trait AndroidImeConnectionHandler: 'static + Send + Sync {
     /// functions: you should not, for example, limit the returned value to
     /// the current line, and specifically do not return 0 characters unless
     /// the cursor is really at the start of the text.
-    fn get_text_before_cursor(&self, count: usize, flags: i32) -> Option<&str>;
+    fn get_text_before_cursor(&self, count: usize) -> Option<Cow<'_, str>>;
 
     /// Retrieve the current capitalization mode in effect at the
     /// current cursor position in the text. See [TextUtils.getCapsMode]

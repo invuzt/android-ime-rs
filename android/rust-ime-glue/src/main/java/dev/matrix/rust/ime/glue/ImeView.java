@@ -1,5 +1,6 @@
 package dev.matrix.rust.ime.glue;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
 import android.graphics.Rect;
@@ -20,14 +21,15 @@ import android.view.inputmethod.InputContentInfo;
 import android.view.inputmethod.InputMethodManager;
 
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.atomic.AtomicLong;
 
 ///
 /// ImeView
 ///
 @SuppressWarnings("NullableProblems")
+@SuppressLint("ViewConstructor")
 public class ImeView extends View {
-    private static final long INVALID_ID = Long.MIN_VALUE;
+    private static final boolean DEBUG = false;
+    private static final String TAG = "ImeView";
 
     ///
     /// Session methods
@@ -43,6 +45,10 @@ public class ImeView extends View {
     ///
     /// Text editing methods
     ///
+    private native boolean nativeBeginBatchEdit(long id);
+
+    private native boolean nativeEndBatchEdit(long id);
+
     private native boolean nativeCommitText(long id, String text, int newCursorPosition);
 
     private native boolean nativeDeleteSurroundingText(long id, int beforeLength, int afterLength);
@@ -60,11 +66,11 @@ public class ImeView extends View {
     ///
     /// Text getter methods
     ///
-    private native String nativeGetSelectedText(long id, int flags);
+    private native String nativeGetSelectedText(long id);
 
-    private native String nativeGetTextAfterCursor(long id, int n, int flags);
+    private native String nativeGetTextAfterCursor(long id, int n);
 
-    private native String nativeGetTextBeforeCursor(long id, int n, int flags);
+    private native String nativeGetTextBeforeCursor(long id, int n);
 
     private native int nativeGetCursorCapsMode(long id, int reqModes);
 
@@ -75,7 +81,7 @@ public class ImeView extends View {
     ///
     private final Activity activity;
     private final InputMethodManager imm;
-    private final AtomicLong nativeHandlerId = new AtomicLong(INVALID_ID);
+    private InnerInputConnection activeConnection;
 
     private ImeView(Activity context) {
         super(context);
@@ -110,10 +116,7 @@ public class ImeView extends View {
 
     public void activate(long id) {
         activity.runOnUiThread(() -> {
-            long oldId = nativeHandlerId.getAndSet(id);
-            if (oldId != INVALID_ID && oldId != id) {
-                nativeConnectionClosed(oldId);
-            }
+            activeConnection = new InnerInputConnection(id);
 
             setFocusable(true);
             setFocusableInTouchMode(true);
@@ -129,9 +132,10 @@ public class ImeView extends View {
 
     public void deactivate(long id) {
         activity.runOnUiThread(() -> {
-            if (!nativeHandlerId.compareAndSet(id, INVALID_ID)) {
+            if (activeConnection.connectionId != id) {
                 return;
             }
+            activeConnection = null;
 
             setFocusable(false);
             setFocusableInTouchMode(false);
@@ -139,6 +143,27 @@ public class ImeView extends View {
 
             imm.hideSoftInputFromWindow(getWindowToken(), 0);
             nativeConnectionClosed(id);
+        });
+    }
+
+    public void updateSelection(
+            long id,
+            int selectionStart,
+            int selectionEnd,
+            int compositionStart,
+            int compositionEnd
+    ) {
+        activity.runOnUiThread(() -> {
+            if (activeConnection.connectionId != id) {
+                return;
+            }
+            imm.updateSelection(
+                    this,
+                    selectionStart,
+                    selectionEnd,
+                    compositionStart,
+                    compositionEnd
+            );
         });
     }
 
@@ -161,307 +186,255 @@ public class ImeView extends View {
         if (outAttrs != null) {
             outAttrs.inputType = InputType.TYPE_CLASS_TEXT;
             outAttrs.imeOptions = EditorInfo.IME_ACTION_DONE;
+//            EditorInfo.initialSelStart
+//            EditorInfo.initialSelEnd
         }
 
-        return new InputConnection() {
-            static final boolean DEBUG = false;
-            static final String INNER_TAG = "ImeInputConnection";
+        if (DEBUG) {
+            Log.d(TAG, "openConnection");
+        }
 
-            int batchDepth = 0;
-            boolean isActive = true;
-
-            ///
-            /// Session methods
-            ///
-            @Override
-            public void closeConnection() {
-                if (DEBUG) {
-                    Log.d(INNER_TAG, "closeConnection");
-                }
-                batchDepth = 0;
-                isActive = false;
-                deactivate(nativeHandlerId.get());
-            }
-
-            @Override
-            public boolean sendKeyEvent(KeyEvent event) {
-                return ensureActive(false, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "sendKeyEvent: ${event.keyCode}");
-                    }
-                    return nativeSendKeyEvent(id, event.getKeyCode());
-                });
-            }
-
-            @Override
-            public boolean performContextMenuAction(int actionId) {
-                return ensureActive(false, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "performContextMenuAction: id = $id");
-                    }
-                    return nativePerformContextMenuAction(id, actionId);
-                });
-            }
-
-            @Override
-            public boolean performEditorAction(int editorAction) {
-                return ensureActive(false, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "performEditorAction: editorAction = $editorAction");
-                    }
-                    return nativePerformEditorAction(id, editorAction);
-                });
-            }
-
-            @Override
-            public boolean beginBatchEdit() {
-                return ensureActive(false, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "beginBatchEdit");
-                    }
-                    return beginBatchEditInternal();
-                });
-            }
-
-            @Override
-            public boolean endBatchEdit() {
-                return ensureActive(false, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "beginBatchEdit");
-                    }
-                    return endBatchEditInternal();
-                });
-            }
-
-            private boolean beginBatchEditInternal() {
-                batchDepth += 1;
-                return true;
-            }
-
-            private boolean endBatchEditInternal() {
-                batchDepth = Math.max(batchDepth - 1, 0);
-                // TODO if (batchDepth == 0)
-                return batchDepth > 0;
-            }
-
-            ///
-            /// Text editing methods
-            ///
-
-            @Override
-            public boolean commitText(CharSequence text, int newCursorPosition) {
-                if (text == null) {
-                    return false;
-                }
-                return ensureActive(false, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "commitText: text = $text, newCursorPosition = $newCursorPosition");
-                    }
-                    return nativeCommitText(id, text.toString(), newCursorPosition);
-                });
-            }
-
-            @Override
-            public boolean deleteSurroundingText(int beforeLength, int afterLength) {
-                return ensureActive(false, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "deleteSurroundingText: beforeLength = $beforeLength, afterLength = $afterLength");
-                    }
-                    return nativeDeleteSurroundingText(id, beforeLength, afterLength);
-                });
-            }
-
-            @Override
-            public boolean deleteSurroundingTextInCodePoints(int beforeLength, int afterLength) {
-                return ensureActive(false, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "deleteSurroundingTextInCodePoints: beforeLength = $beforeLength, afterLength = $afterLength");
-                    }
-                    return nativeDeleteSurroundingTextInCodePoints(id, beforeLength, afterLength);
-                });
-            }
-
-            @Override
-            public boolean setSelection(int start, int end) {
-                return ensureActive(false, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "setSelection: start = $start, end = $end");
-                    }
-                    return nativeSetSelection(id, start, end);
-                });
-            }
-
-            @Override
-            public boolean setComposingRegion(int start, int end) {
-                return ensureActive(false, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "setComposingRegion: start = $start, end = $end");
-                    }
-                    return nativeSetComposingRegion(id, start, end);
-                });
-            }
-
-            @Override
-            public boolean setComposingText(CharSequence text, int newCursorPosition) {
-                if (text == null) {
-                    return false;
-                }
-                return ensureActive(false, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "setComposingText: text = $text, newCursorPosition = $newCursorPosition");
-                    }
-                    return nativeSetComposingText(id, text.toString(), newCursorPosition);
-                });
-            }
-
-            @Override
-            public boolean finishComposingText() {
-                return ensureActive(false, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "finishComposingText");
-                    }
-                    return nativeFinishComposingText(id);
-                });
-            }
-
-            ///
-            /// Text getter methods
-            ///
-
-            @Override
-            public ExtractedText getExtractedText(ExtractedTextRequest request, int flags) {
-                if (DEBUG) {
-                    Log.d(INNER_TAG, "getExtractedText: flags = $flags");
-                }
-                return null;
-            }
-
-            @Override
-            public CharSequence getSelectedText(int flags) {
-                return ensureActive(null, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "getSelectedText: flags = $flags");
-                    }
-                    return nativeGetSelectedText(id, flags);
-                });
-            }
-
-            @Override
-            public CharSequence getTextAfterCursor(int n, int flags) {
-                return ensureActive(null, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "getTextAfterCursor: n = $n, flags = $flags");
-                    }
-                    return nativeGetTextAfterCursor(id, n, flags);
-                });
-            }
-
-            @Override
-            public CharSequence getTextBeforeCursor(int n, int flags) {
-                return ensureActive(null, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "getTextBeforeCursor: n = $n, flags = $flags");
-                    }
-                    return nativeGetTextBeforeCursor(id, n, flags);
-                });
-            }
-
-            @Override
-            public int getCursorCapsMode(int reqModes) {
-                return ensureActive(0, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "getCursorCapsMode: reqModes = $reqModes");
-                    }
-                    return nativeGetCursorCapsMode(id, reqModes);
-                    // TextUtils.getCapsMode(textFieldValue.text, textFieldValue.selection.min, reqModes)
-                });
-            }
-
-            @Override
-            public boolean requestCursorUpdates(int cursorUpdateMode) {
-                return ensureActive(false, (id) -> {
-                    if (DEBUG) {
-                        Log.d(INNER_TAG, "requestCursorUpdates: cursorUpdateMode = $cursorUpdateMode");
-                    }
-                    return nativeRequestCursorUpdates(id, cursorUpdateMode);
-                });
-            }
-
-            ///
-            /// Unsupported methods
-            ///
-
-            @Override
-            public boolean commitCompletion(CompletionInfo text) {
-                if (DEBUG) {
-                    Log.d(INNER_TAG, "commitCompletion: text = $text");
-                }
-                return false;
-            }
-
-            @Override
-            public boolean commitContent(InputContentInfo inputContentInfo, int flags, Bundle opts) {
-                if (DEBUG) {
-                    Log.d(INNER_TAG, "commitContent");
-                }
-                return false;
-            }
-
-            @Override
-            public boolean commitCorrection(CorrectionInfo correctionInfo) {
-                if (DEBUG) {
-                    Log.d(INNER_TAG, "commitCorrection: info = $correctionInfo");
-                }
-                return false;
-            }
-
-            @Override
-            public Handler getHandler() {
-                if (DEBUG) {
-                    Log.d(INNER_TAG, "getHandler");
-                }
-                return null;
-            }
-
-            @Override
-            public boolean clearMetaKeyStates(int states) {
-                if (DEBUG) {
-                    Log.d(INNER_TAG, "clearMetaKeyStates: states = $states");
-                }
-                return false;
-            }
-
-            @Override
-            public boolean reportFullscreenMode(boolean enabled) {
-                if (DEBUG) {
-                    Log.d(INNER_TAG, "reportFullscreenMode: enabled = $enabled");
-                }
-                return false;
-            }
-
-            @Override
-            public boolean performPrivateCommand(String action, Bundle data) {
-                if (DEBUG) {
-                    Log.d(INNER_TAG, "performPrivateCommand: action = $action");
-                }
-                return false;
-            }
-
-            ///
-            /// Helper methods
-            ///
-
-            private <T> T ensureActive(T fallback, EnsureActiveBlock<T> block) {
-                long nativeHandlerId = ImeView.this.nativeHandlerId.get();
-                if (isActive && nativeHandlerId != INVALID_ID) {
-                    return block.run(nativeHandlerId);
-                }
-                return fallback;
-            }
-        };
+        return activeConnection;
     }
 
-    private interface EnsureActiveBlock<T> {
-        T run(long id);
+    /**
+     * Based on androidx.compose.foundation.text.input.internal.RecordingInputConnection
+     */
+    private class InnerInputConnection implements InputConnection {
+        final long connectionId;
+
+        InnerInputConnection(long id) {
+            connectionId = id;
+        }
+
+        ///
+        /// Session methods
+        ///
+        @Override
+        public void closeConnection() {
+            if (DEBUG) {
+                Log.d(TAG, "closeConnection");
+            }
+            deactivate(connectionId);
+        }
+
+        @Override
+        public boolean sendKeyEvent(KeyEvent event) {
+            if (DEBUG) {
+                Log.d(TAG, "sendKeyEvent: ${event.keyCode}");
+            }
+            return nativeSendKeyEvent(connectionId, event.getKeyCode());
+        }
+
+        @Override
+        public boolean performContextMenuAction(int actionId) {
+            if (DEBUG) {
+                Log.d(TAG, "performContextMenuAction: id = $id");
+            }
+            return nativePerformContextMenuAction(connectionId, actionId);
+        }
+
+        @Override
+        public boolean performEditorAction(int editorAction) {
+            if (DEBUG) {
+                Log.d(TAG, "performEditorAction: editorAction = $editorAction");
+            }
+            return nativePerformEditorAction(connectionId, editorAction);
+        }
+
+        ///
+        /// Text editing methods
+        ///
+
+        @Override
+        public boolean beginBatchEdit() {
+            if (DEBUG) {
+                Log.d(TAG, "beginBatchEdit");
+            }
+            return nativeBeginBatchEdit(connectionId);
+        }
+
+        @Override
+        public boolean endBatchEdit() {
+            if (DEBUG) {
+                Log.d(TAG, "beginBatchEdit");
+            }
+            return nativeEndBatchEdit(connectionId);
+        }
+
+        @Override
+        public boolean commitText(CharSequence text, int newCursorPosition) {
+            if (text == null) {
+                return false;
+            }
+            if (DEBUG) {
+                Log.d(TAG, "commitText: text = $text, newCursorPosition = $newCursorPosition");
+            }
+            return nativeCommitText(connectionId, text.toString(), newCursorPosition);
+        }
+
+        @Override
+        public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+            if (DEBUG) {
+                Log.d(TAG, "deleteSurroundingText: beforeLength = $beforeLength, afterLength = $afterLength");
+            }
+            return nativeDeleteSurroundingText(connectionId, beforeLength, afterLength);
+        }
+
+        @Override
+        public boolean deleteSurroundingTextInCodePoints(int beforeLength, int afterLength) {
+            if (DEBUG) {
+                Log.d(TAG, "deleteSurroundingTextInCodePoints: beforeLength = $beforeLength, afterLength = $afterLength");
+            }
+            return nativeDeleteSurroundingTextInCodePoints(connectionId, beforeLength, afterLength);
+        }
+
+        @Override
+        public boolean setSelection(int start, int end) {
+            if (DEBUG) {
+                Log.d(TAG, "setSelection: start = $start, end = $end");
+            }
+            return nativeSetSelection(connectionId, start, end);
+        }
+
+        @Override
+        public boolean setComposingRegion(int start, int end) {
+            if (DEBUG) {
+                Log.d(TAG, "setComposingRegion: start = $start, end = $end");
+            }
+            return nativeSetComposingRegion(connectionId, start, end);
+        }
+
+        @Override
+        public boolean setComposingText(CharSequence text, int newCursorPosition) {
+            if (text == null) {
+                return false;
+            }
+            if (DEBUG) {
+                Log.d(TAG, "setComposingText: text = $text, newCursorPosition = $newCursorPosition");
+            }
+            return nativeSetComposingText(connectionId, text.toString(), newCursorPosition);
+        }
+
+        @Override
+        public boolean finishComposingText() {
+            if (DEBUG) {
+                Log.d(TAG, "finishComposingText");
+            }
+            return nativeFinishComposingText(connectionId);
+        }
+
+        ///
+        /// Text getter methods
+        ///
+
+        @Override
+        public ExtractedText getExtractedText(ExtractedTextRequest request, int flags) {
+            if (DEBUG) {
+                Log.d(TAG, "getExtractedText: flags = $flags");
+            }
+            return null;
+        }
+
+        @Override
+        public CharSequence getSelectedText(int flags) {
+            if (DEBUG) {
+                Log.d(TAG, "getSelectedText: flags = $flags");
+            }
+            return nativeGetSelectedText(connectionId);
+        }
+
+        @Override
+        public CharSequence getTextAfterCursor(int n, int flags) {
+            if (DEBUG) {
+                Log.d(TAG, "getTextAfterCursor: n = $n, flags = $flags");
+            }
+            return nativeGetTextAfterCursor(connectionId, n);
+        }
+
+        @Override
+        public CharSequence getTextBeforeCursor(int n, int flags) {
+            if (DEBUG) {
+                Log.d(TAG, "getTextBeforeCursor: n = $n, flags = $flags");
+            }
+            return nativeGetTextBeforeCursor(connectionId, n);
+        }
+
+        @Override
+        public int getCursorCapsMode(int reqModes) {
+            if (DEBUG) {
+                Log.d(TAG, "getCursorCapsMode: reqModes = $reqModes");
+            }
+            // TextUtils.getCapsMode(textFieldValue.text, textFieldValue.selection.min, reqModes)
+            return nativeGetCursorCapsMode(connectionId, reqModes);
+        }
+
+        @Override
+        public boolean requestCursorUpdates(int cursorUpdateMode) {
+            if (DEBUG) {
+                Log.d(TAG, "requestCursorUpdates: cursorUpdateMode = $cursorUpdateMode");
+            }
+            return nativeRequestCursorUpdates(connectionId, cursorUpdateMode);
+        }
+
+        ///
+        /// Unsupported methods
+        ///
+
+        @Override
+        public boolean commitCompletion(CompletionInfo text) {
+            if (DEBUG) {
+                Log.d(TAG, "commitCompletion: text = $text");
+            }
+            return false;
+        }
+
+        @Override
+        public boolean commitContent(InputContentInfo inputContentInfo, int flags, Bundle opts) {
+            if (DEBUG) {
+                Log.d(TAG, "commitContent");
+            }
+            return false;
+        }
+
+        @Override
+        public boolean commitCorrection(CorrectionInfo correctionInfo) {
+            if (DEBUG) {
+                Log.d(TAG, "commitCorrection: info = $correctionInfo");
+            }
+            return false;
+        }
+
+        @Override
+        public Handler getHandler() {
+            if (DEBUG) {
+                Log.d(TAG, "getHandler");
+            }
+            return null;
+        }
+
+        @Override
+        public boolean clearMetaKeyStates(int states) {
+            if (DEBUG) {
+                Log.d(TAG, "clearMetaKeyStates: states = $states");
+            }
+            return false;
+        }
+
+        @Override
+        public boolean reportFullscreenMode(boolean enabled) {
+            if (DEBUG) {
+                Log.d(TAG, "reportFullscreenMode: enabled = $enabled");
+            }
+            return false;
+        }
+
+        @Override
+        public boolean performPrivateCommand(String action, Bundle data) {
+            if (DEBUG) {
+                Log.d(TAG, "performPrivateCommand: action = $action");
+            }
+            return false;
+        }
     }
 }

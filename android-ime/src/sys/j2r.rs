@@ -1,8 +1,8 @@
-use crate::connection::find_handler;
+use crate::handler::registry::AndroidImeConnectionRegistry;
+use crate::handler::AndroidImeConnectionHandler;
 use jni::objects::*;
 use jni::sys::{jboolean, jint, jlong, jstring, JNI_FALSE, JNI_TRUE};
 use jni::JNIEnv;
-use crate::handler::AndroidImeConnectionHandler;
 
 ////////////////////////////////////////////////////////////////////////////////
 #[unsafe(no_mangle)]
@@ -49,6 +49,26 @@ pub extern "C" fn Java_dev_matrix_rust_ime_glue_ImeView_nativePerformEditorActio
 
 ////////////////////////////////////////////////////////////////////////////////
 #[unsafe(no_mangle)]
+pub extern "C" fn Java_dev_matrix_rust_ime_glue_ImeView_nativeBeginBatchEdit<'a>(
+    _env: JNIEnv<'a>,
+    _object: JObject<'a>,
+    id: jlong,
+) -> jboolean {
+    with_handler(id, |handler| Ok(handler.begin_batch_edit()))
+}
+
+////////////////////////////////////////////////////////////////////////////////
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_dev_matrix_rust_ime_glue_ImeView_nativeEndBatchEdit<'a>(
+    _env: JNIEnv<'a>,
+    _object: JObject<'a>,
+    id: jlong,
+) -> jboolean {
+    with_handler(id, |handler| Ok(handler.end_batch_edit()))
+}
+
+////////////////////////////////////////////////////////////////////////////////
+#[unsafe(no_mangle)]
 pub extern "C" fn Java_dev_matrix_rust_ime_glue_ImeView_nativeCommitText<'a>(
     env: JNIEnv<'a>,
     _object: JObject<'a>,
@@ -59,7 +79,7 @@ pub extern "C" fn Java_dev_matrix_rust_ime_glue_ImeView_nativeCommitText<'a>(
     with_handler(id, |handler| {
         let text = unsafe { env.get_string_unchecked(&text)? };
         let text = text.to_string_lossy();
-        Ok(handler.commit_text(text.as_ref(), new_cursor_position))
+        Ok(handler.commit_text(text.as_ref(), new_cursor_position.try_into()?))
     })
 }
 
@@ -139,7 +159,7 @@ pub extern "C" fn Java_dev_matrix_rust_ime_glue_ImeView_nativeSetComposingText<'
     with_handler(id, |handler| {
         let text = unsafe { env.get_string_unchecked(&text)? };
         let text = text.to_string_lossy();
-        Ok(handler.set_composing_text(text.as_ref(), new_cursor_position))
+        Ok(handler.set_composing_text(text.as_ref(), new_cursor_position.try_into()?))
     })
 }
 
@@ -159,10 +179,9 @@ pub extern "C" fn Java_dev_matrix_rust_ime_glue_ImeView_nativeGetSelectedText<'a
     env: JNIEnv<'a>,
     _object: JObject<'a>,
     id: jlong,
-    flags: jint,
 ) -> jstring {
     with_handler_t(id, std::ptr::null_mut(), |handler| {
-        let Some(text) = handler.get_selected_text(flags) else {
+        let Some(text) = handler.get_selected_text() else {
             return Ok(std::ptr::null_mut());
         };
         Ok(env.new_string(text)?.into_raw())
@@ -176,11 +195,10 @@ pub extern "C" fn Java_dev_matrix_rust_ime_glue_ImeView_nativeGetTextAfterCursor
     _object: JObject<'a>,
     id: jlong,
     n: jint,
-    flags: jint,
 ) -> jstring {
     with_handler_t(id, std::ptr::null_mut(), |handler| {
         let n = usize::try_from(n)?;
-        let Some(text) = handler.get_text_after_cursor(n, flags) else {
+        let Some(text) = handler.get_text_after_cursor(n) else {
             return Ok(std::ptr::null_mut());
         };
         Ok(env.new_string(text)?.into_raw())
@@ -194,11 +212,10 @@ pub extern "C" fn Java_dev_matrix_rust_ime_glue_ImeView_nativeGetTextBeforeCurso
     _object: JObject<'a>,
     id: jlong,
     n: jint,
-    flags: jint,
 ) -> jstring {
     with_handler_t(id, std::ptr::null_mut(), |handler| {
         let n = usize::try_from(n)?;
-        let Some(text) = handler.get_text_before_cursor(n, flags) else {
+        let Some(text) = handler.get_text_before_cursor(n) else {
             return Ok(std::ptr::null_mut());
         };
         Ok(env.new_string(text)?.into_raw())
@@ -246,7 +263,7 @@ where
     F: FnOnce(&dyn AndroidImeConnectionHandler) -> anyhow::Result<T>,
 {
     let id = u64::from_ne_bytes(id.to_ne_bytes());
-    match find_handler(id) {
+    match AndroidImeConnectionRegistry::get().find_handler(id) {
         None => fallback,
         Some(e) => f(&*e).unwrap_or(fallback),
     }

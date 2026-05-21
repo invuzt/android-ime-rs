@@ -1,18 +1,14 @@
 use android_ime::{
-    AndroidImeConnectionHandler, AndroidImeContext, AndroidImeEditable, AndroidImeEditableHandler,
+    AndroidImeContext, AndroidImeEditable, AndroidImeEditableHandler,
 };
 use anyhow::anyhow;
-use eframe::egui::{CentralPanel, Context, RichText, ScrollArea};
+use eframe::egui::{CentralPanel, Context, RichText, ScrollArea, TextEdit};
 use eframe::Frame;
 use jni::objects::JObject;
 use jni::JavaVM;
 use log::error;
 use std::collections::VecDeque;
 use winit::platform::android::activity::AndroidApp;
-
-// Import widget buatan kita
-mod edit_text_widget;
-use edit_text_widget::EditTextWidget;
 
 ////////////////////////////////////////////////////////////////////////////////
 #[unsafe(no_mangle)]
@@ -63,8 +59,8 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
             Ok(Box::new(MyApp {
                 log: Default::default(),
                 editable,
-                input_field: EditTextWidget::new().with_placeholder("Ketik sesuatu di sini..."),
-                output_text: String::new(),
+                input_text: String::new(),
+                input_focused: false,
             }))
         }),
     );
@@ -75,48 +71,62 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
 pub struct MyApp {
     log: VecDeque<String>,
     editable: AndroidImeEditable,
-    input_field: EditTextWidget,
-    output_text: String,
+    input_text: String,
+    input_focused: bool,
 }
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &Context, frame: &mut Frame) {
         let _ = frame;
 
-        // Simpan teks dari input field ke output setiap saat
-        self.output_text = self.input_field.text().to_string();
-
         CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(16.0);
 
-                // INPUT FIELD - klik di sini keyboard akan muncul!
-                ui.heading("📝 Input Field:");
-                let response = self.input_field.show(ui, &self.editable);
-                
+                ui.heading("📝 Input Field (klik untuk mengetik):");
+                ui.add_space(8.0);
+
+                // TextEdit input field
+                let text_edit = TextEdit::singleline(&mut self.input_text)
+                    .hint_text("Ketik di sini...");
+                let response = ui.add(text_edit);
+
+                // Handle focus: munculkan keyboard saat diklik
+                if response.clicked() && !self.input_focused {
+                    self.input_focused = true;
+                    let _ = self.editable.show_soft_keyboard();
+                    self.log.push_front("🔽 Keyboard muncul".to_string());
+                }
+
+                // Handle lost focus: sembunyikan keyboard
+                if response.lost_focus() && self.input_focused {
+                    self.input_focused = false;
+                    let _ = self.editable.hide_soft_keyboard();
+                    self.log.push_front("🔼 Keyboard sembunyi".to_string());
+                }
+
+                // Log perubahan teks
                 if response.changed() {
-                    self.log.push_front(format!("Teks berubah: {}", self.input_field.text()));
+                    self.log.push_front(format!("✏️ Teks: {}", self.input_text));
                 }
 
                 ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(8.0);
 
                 // Tombol manual (opsional)
                 ui.horizontal(|ui| {
-                    if ui.button("🔽 Show IME (Manual)").clicked() {
-                        if let Err(e) = self.editable.show_soft_keyboard() {
-                            self.log.push_front(e.to_string());
-                        }
+                    if ui.button("🔽 Show IME").clicked() {
+                        let _ = self.editable.show_soft_keyboard();
+                        self.input_focused = true;
                     }
-                    
-                    if ui.button("🔼 Hide IME (Manual)").clicked() {
-                        if let Err(e) = self.editable.hide_soft_keyboard() {
-                            self.log.push_front(e.to_string());
-                        }
+                    if ui.button("🔼 Hide IME").clicked() {
+                        let _ = self.editable.hide_soft_keyboard();
+                        self.input_focused = false;
                     }
-                    
                     if ui.button("🗑 Clear").clicked() {
-                        self.input_field.set_text("");
-                        self.log.push_front("Input field cleared".to_string());
+                        self.input_text.clear();
+                        self.log.push_front("Cleared".to_string());
                     }
                 });
 
@@ -124,21 +134,15 @@ impl eframe::App for MyApp {
                 ui.separator();
                 ui.add_space(8.0);
 
-                // Output / Log
-                ui.heading("📄 Output / Log:");
-                ui.add_space(8.0);
-                
+                ui.heading("📄 Log:");
                 ScrollArea::vertical()
                     .max_height(300.0)
-                    .auto_shrink([false; 2])
                     .show(ui, |ui| {
-                        ui.label(format!("✏️ Teks saat ini: \"{}\"", self.output_text));
+                        ui.label(format!("📌 Teks saat ini: \"{}\"", self.input_text));
                         ui.add_space(8.0);
-                        
-                        for message in self.log.iter().take(15) {
-                            ui.label(RichText::new(message).small());
+                        for msg in self.log.iter().take(15) {
+                            ui.label(RichText::new(msg).small());
                         }
-                        
                         if self.log.is_empty() {
                             ui.label(RichText::new("Belum ada aktivitas...").weak());
                         }

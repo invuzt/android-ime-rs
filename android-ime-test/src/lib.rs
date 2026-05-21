@@ -1,16 +1,18 @@
 use android_ime::{
-    AndroidImeConnection, AndroidImeConnectionHandler, AndroidImeContext, AndroidImeEditable, AndroidImeEditableHandler,
+    AndroidImeConnectionHandler, AndroidImeContext, AndroidImeEditable, AndroidImeEditableHandler,
 };
 use anyhow::anyhow;
-use eframe::egui::{Align, CentralPanel, Context, FontFamily, FontId, Layout, RichText};
-use eframe::emath::Vec2;
+use eframe::egui::{CentralPanel, Context, RichText, ScrollArea};
 use eframe::Frame;
 use jni::objects::JObject;
 use jni::JavaVM;
-use log::{error, info};
-use std::borrow::Cow;
+use log::error;
 use std::collections::VecDeque;
 use winit::platform::android::activity::AndroidApp;
+
+// Import widget buatan kita
+mod edit_text_widget;
+use edit_text_widget::EditTextWidget;
 
 ////////////////////////////////////////////////////////////////////////////////
 #[unsafe(no_mangle)]
@@ -61,6 +63,8 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
             Ok(Box::new(MyApp {
                 log: Default::default(),
                 editable,
+                input_field: EditTextWidget::new().with_placeholder("Ketik sesuatu di sini..."),
+                output_text: String::new(),
             }))
         }),
     );
@@ -71,151 +75,75 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
 pub struct MyApp {
     log: VecDeque<String>,
     editable: AndroidImeEditable,
+    input_field: EditTextWidget,
+    output_text: String,
 }
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &Context, frame: &mut Frame) {
         let _ = frame;
 
-        // while let Ok(message) = self.rx.try_recv() {
-        //     self.log.push_front(message);
-        // }
-
-        while self.log.len() > 20 {
-            self.log.pop_back();
-        }
+        // Simpan teks dari input field ke output setiap saat
+        self.output_text = self.input_field.text().to_string();
 
         CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(16.0);
 
-                if ui.button("Show IME").clicked() {
-                    if let Err(e) = self.editable.show_soft_keyboard() {
-                        self.log.push_front(e.to_string());
-                    }
+                // INPUT FIELD - klik di sini keyboard akan muncul!
+                ui.heading("📝 Input Field:");
+                let response = self.input_field.show(ui, &self.editable);
+                
+                if response.changed() {
+                    self.log.push_front(format!("Teks berubah: {}", self.input_field.text()));
                 }
 
-                if ui.button("Hide IME").clicked() {
-                    if let Err(e) = self.editable.hide_soft_keyboard() {
-                        self.log.push_front(e.to_string());
+                ui.add_space(16.0);
+
+                // Tombol manual (opsional)
+                ui.horizontal(|ui| {
+                    if ui.button("🔽 Show IME (Manual)").clicked() {
+                        if let Err(e) = self.editable.show_soft_keyboard() {
+                            self.log.push_front(e.to_string());
+                        }
                     }
-                }
-
-                ui.with_layout(Layout::top_down(Align::Min), |ui| {
-                    ui.spacing_mut().item_spacing = Vec2::ZERO;
-
-                    ui.label(format!("Text: {}", self.editable.content().text));
-
-                    for message in self.log.iter() {
-                        ui.label(RichText::new(message).font(FontId::new(5.0, FontFamily::Monospace)));
+                    
+                    if ui.button("🔼 Hide IME (Manual)").clicked() {
+                        if let Err(e) = self.editable.hide_soft_keyboard() {
+                            self.log.push_front(e.to_string());
+                        }
+                    }
+                    
+                    if ui.button("🗑 Clear").clicked() {
+                        self.input_field.set_text("");
+                        self.log.push_front("Input field cleared".to_string());
                     }
                 });
+
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // Output / Log
+                ui.heading("📄 Output / Log:");
+                ui.add_space(8.0);
+                
+                ScrollArea::vertical()
+                    .max_height(300.0)
+                    .auto_shrink([false; 2])
+                    .show(ui, |ui| {
+                        ui.label(format!("✏️ Teks saat ini: \"{}\"", self.output_text));
+                        ui.add_space(8.0);
+                        
+                        for message in self.log.iter().take(15) {
+                            ui.label(RichText::new(message).small());
+                        }
+                        
+                        if self.log.is_empty() {
+                            ui.label(RichText::new("Belum ada aktivitas...").weak());
+                        }
+                    });
             });
         });
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-struct Handler {
-    tx: std::sync::mpsc::Sender<String>,
-    context: Context,
-}
-
-impl Handler {
-    fn log(&self, message: String) {
-        info!("{message}");
-        let _ = self.tx.send(message);
-        self.context.request_repaint();
-    }
-}
-
-impl AndroidImeConnectionHandler for Handler {
-    fn connection_closed(&self) {
-        self.log("connection_closed".to_string());
-    }
-
-    fn send_key_event(&self, key_code: i32) -> bool {
-        self.log(format!("send_key_event: {key_code}"));
-        true
-    }
-
-    fn perform_context_menu_action(&self, action_id: i32) -> bool {
-        self.log(format!("perform_context_menu_action: {action_id}"));
-        true
-    }
-
-    fn perform_editor_action(&self, editor_action: i32) -> bool {
-        self.log(format!("perform_editor_action: {editor_action}"));
-        true
-    }
-
-    fn begin_batch_edit(&self) -> bool {
-        self.log(format!("begin_batch_edit"));
-        true
-    }
-
-    fn end_batch_edit(&self) -> bool {
-        self.log(format!("end_batch_edit"));
-        true
-    }
-
-    fn commit_text(&self, text: &str, new_cursor_position: isize) -> bool {
-        self.log(format!("commit_text: {text}, {new_cursor_position}"));
-        true
-    }
-
-    fn delete_surrounding_text(&self, before: usize, after: usize) -> bool {
-        self.log(format!("delete_surrounding_text: {before}, {after}"));
-        true
-    }
-
-    fn delete_surrounding_text_in_code_points(&self, before: usize, after: usize) -> bool {
-        self.log(format!("delete_surrounding_text_in_code_points: {before}, {after}"));
-        true
-    }
-
-    fn set_selection(&self, start: usize, end: usize) -> bool {
-        self.log(format!("set_selection: {start}, {end}"));
-        true
-    }
-
-    fn set_composing_region(&self, start: usize, end: usize) -> bool {
-        self.log(format!("set_composing_region: {start}, {end}"));
-        true
-    }
-
-    fn set_composing_text(&self, input: &str, new_cursor_position: isize) -> bool {
-        self.log(format!("set_composing_text: {input}, {new_cursor_position}"));
-        true
-    }
-
-    fn finish_composing_text(&self) -> bool {
-        self.log("finish_composing_text".to_string());
-        true
-    }
-
-    fn get_selected_text(&self) -> Option<Cow<'_, str>> {
-        self.log(format!("get_selected_text"));
-        None
-    }
-
-    fn get_text_after_cursor(&self, count: usize) -> Option<Cow<'_, str>> {
-        self.log(format!("get_text_after_cursor: {count}"));
-        None
-    }
-
-    fn get_text_before_cursor(&self, count: usize) -> Option<Cow<'_, str>> {
-        self.log(format!("get_text_before_cursor: {count}"));
-        None
-    }
-
-    fn get_cursor_caps_mode(&self, req_modes: i32) -> i32 {
-        self.log(format!("get_cursor_caps_mode: {req_modes}"));
-        0
-    }
-
-    fn request_cursor_updates(&self, cursor_update_mode: i32) -> bool {
-        self.log(format!("request_cursor_updates: {cursor_update_mode}"));
-        true
     }
 }

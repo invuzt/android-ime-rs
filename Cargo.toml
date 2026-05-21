@@ -8,7 +8,7 @@ members = [
 [workspace.package]
 name = "android-ime-rs"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [workspace.dependencies]
 jni = "0.21.1"

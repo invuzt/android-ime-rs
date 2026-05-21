@@ -1,7 +1,7 @@
 [package]
 name = "android-ime-test"
-version = "0.1.0"
-edition = "2021"
+version = { workspace = true }
+edition = { workspace = true }
 publish = false
 
 [lib]
@@ -10,9 +10,10 @@ crate-type = ["cdylib"]
 [dependencies]
 android-ime = { path = "../android-ime" }
 
-jni = "0.21.1"
-log = "0.4"
-anyhow = "1.0"
+jni = { workspace = true }
+log = { workspace = true }
+anyhow = { workspace = true }
+
 winit = "0.30.12"
 android_logger = "0.15.1"
 
@@ -33,7 +34,7 @@ target_sdk_version = 30
 min_sdk_version = 21
 
 [package.metadata.android.signing.release]
-path = "debug.keystore"
+path = "../debug.keystore"
 keystore_password = "android"
 key_alias = "androiddebugkey"
 key_password = "android"

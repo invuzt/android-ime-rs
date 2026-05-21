@@ -1,0 +1,48 @@
+name: Build Rust Android APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: aarch64-linux-android
+
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2
+
+    - name: Install cargo-apk
+      run: cargo install cargo-apk
+
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Install NDK & Platform 30
+      run: |
+        ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-30" "ndk;26.1.10909125"
+        echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/26.1.10909125" >> $GITHUB_ENV
+
+    - name: Generate Keystore
+      run: |
+        keytool -genkey -v -keystore debug.keystore -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+
+    - name: Build APK (Release Mode)
+      run: |
+        cd android-ime-test
+        cargo apk build --release
+
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: android-ime-test-app
+        path: |
+          android-ime-test/target/release/apk/*.apk
+          !android-ime-test/target/release/apk/*-unaligned.apk

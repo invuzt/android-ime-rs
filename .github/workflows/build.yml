@@ -42,7 +42,7 @@ jobs:
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: android-ime-test-app
+        name: android-ime-test-app-release
         path: |
           android-ime-test/target/release/apk/*.apk
           !android-ime-test/target/release/apk/*-unaligned.apk

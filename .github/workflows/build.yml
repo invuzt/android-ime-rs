@@ -39,10 +39,18 @@ jobs:
         cd android-ime-test
         cargo apk build --release
 
+    - name: List APK files (debug)
+      run: |
+        echo "Mencari file APK..."
+        find . -name "*.apk" -type f
+        echo "---"
+        ls -la android-ime-test/target/release/apk/ || echo "Folder apk tidak ditemukan"
+
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
         name: android-ime-test-app-release
         path: |
-          android-ime-test/target/release/apk/*.apk
-          !android-ime-test/target/release/apk/*-unaligned.apk
+          **/target/release/apk/*.apk
+          !**/target/release/apk/*-unaligned.apk
+        if-no-files-found: error

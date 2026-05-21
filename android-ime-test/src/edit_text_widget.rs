@@ -1,5 +1,5 @@
-use eframe::egui::{self, Response, Ui, Widget};
 use android_ime::AndroidImeEditable;
+use eframe::egui::{self, Response, Ui};
 
 /// Widget input field seperti EditText di Android
 /// Keyboard akan muncul otomatis saat diklik
@@ -35,26 +35,22 @@ impl EditTextWidget {
         std::mem::take(&mut self.text)
     }
 
-    pub fn show(&mut self, ui: &mut Ui, ime: &AndroidImeEditable) -> Response {
-        // Buat TextEdit widget dari egui
+    pub fn show(&mut self, ui: &mut Ui, ime: &mut AndroidImeEditable) -> Response {
         let text_edit = egui::TextEdit::singleline(&mut self.text)
             .hint_text(&self.placeholder);
         
         let response = ui.add(text_edit);
         
-        // Handle klik → munculkan keyboard
         if response.clicked() && !self.focus {
             self.focus = true;
             let _ = ime.show_soft_keyboard();
         }
         
-        // Handle kehilangan fokus → sembunyikan keyboard
         if response.lost_focus() && self.focus {
             self.focus = false;
             let _ = ime.hide_soft_keyboard();
         }
         
-        // Request repaint saat ada perubahan teks
         if response.changed() {
             ui.ctx().request_repaint();
         }

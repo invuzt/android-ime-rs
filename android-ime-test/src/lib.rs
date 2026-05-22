@@ -2,11 +2,11 @@ use android_ime::{
     AndroidImeContext, AndroidImeEditable, AndroidImeEditableHandler,
 };
 use anyhow::anyhow;
-use eframe::egui::{CentralPanel, Context, RichText, ScrollArea, TopBottomPanel};
+use eframe::egui::{self, CentralPanel, Color32, Context, RichText, ScrollArea, TopBottomPanel};
 use eframe::Frame;
 use jni::objects::JObject;
 use jni::JavaVM;
-use log::{error, info};
+use log::error;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -43,7 +43,6 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
     let shared_text = Arc::new(Mutex::new(String::new()));
     let pending_action = Arc::new(Mutex::new(PendingAction::None));
     let items = Arc::new(Mutex::new(Vec::<String>::new()));
-    let edit_index = Arc::new(Mutex::new(0usize));
 
     let result = eframe::run_native(
         "CRUD App - IME Test",
@@ -52,17 +51,10 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
             struct Handler {
                 ctx: Context,
                 shared_text: Arc<Mutex<String>>,
-                pending_action: Arc<Mutex<PendingAction>>,
-                items: Arc<Mutex<Vec<String>>>,
-                edit_index: Arc<Mutex<usize>>,
             }
 
             impl AndroidImeEditableHandler for Handler {
                 fn text_updated(&self) {
-                    info!(">>> text_updated() CALLED! <<<");
-                    if let Ok(text) = self.shared_text.lock() {
-                        info!(">>> Current text: '{}' <<<", text);
-                    }
                     self.ctx.request_repaint();
                 }
             }
@@ -73,9 +65,6 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
             let handler = Handler {
                 ctx: cc.egui_ctx.clone(),
                 shared_text: shared_text.clone(),
-                pending_action: pending_action.clone(),
-                items: items.clone(),
-                edit_index: edit_index.clone(),
             };
             let editable = AndroidImeEditable::new(&context, handler);
 
@@ -87,7 +76,6 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
                 shared_text: shared_text.clone(),
                 pending_action: pending_action.clone(),
                 items: items.clone(),
-                edit_index: edit_index.clone(),
                 input_buffer: String::new(),
             }))
         }),
@@ -109,13 +97,12 @@ pub struct MyApp {
     shared_text: Arc<Mutex<String>>,
     pending_action: Arc<Mutex<PendingAction>>,
     items: Arc<Mutex<Vec<String>>>,
-    edit_index: Arc<Mutex<usize>>,
     input_buffer: String,
 }
 
 impl MyApp {
     fn sync_text_from_ime(&mut self) {
-        if let Ok(mut shared) = self.shared_text.lock() {
+        if let Ok(shared) = self.shared_text.lock() {
             if self.input_buffer != *shared {
                 self.input_buffer = shared.clone();
                 self.log.push_front(format!("📥 Input: '{}'", self.input_buffer));
@@ -132,33 +119,43 @@ impl MyApp {
     
     fn add_item(&mut self) {
         if !self.input_buffer.is_empty() {
+            let text = self.input_buffer.clone();
             if let Ok(mut items) = self.items.lock() {
-                items.push(self.input_buffer.clone());
-                self.log.push_front(format!("✅ Added: '{}'", self.input_buffer));
-                self.clear_input();
+                items.push(text.clone());
+                self.log.push_front(format!("✅ Added: '{}'", text));
             }
+            self.clear_input();
         }
     }
     
     fn update_item(&mut self, index: usize) {
         if !self.input_buffer.is_empty() {
+            let text = self.input_buffer.clone();
             if let Ok(mut items) = self.items.lock() {
                 if index < items.len() {
                     let old = items[index].clone();
-                    items[index] = self.input_buffer.clone();
-                    self.log.push_front(format!("✏️ Updated: '{}' -> '{}'", old, self.input_buffer));
-                    self.clear_input();
+                    items[index] = text;
+                    self.log.push_front(format!("✏️ Updated: '{}' -> '{}'", old, items[index]));
                 }
             }
+            self.clear_input();
         }
     }
     
     fn delete_item(&mut self, index: usize) {
-        if let Ok(mut items) = self.items.lock() {
-            if index < items.len() {
-                let removed = items.remove(index);
-                self.log.push_front(format!("🗑️ Deleted: '{}'", removed));
+        let removed = {
+            if let Ok(mut items) = self.items.lock() {
+                if index < items.len() {
+                    Some(items.remove(index))
+                } else {
+                    None
+                }
+            } else {
+                None
             }
+        };
+        if let Some(removed) = removed {
+            self.log.push_front(format!("🗑️ Deleted: '{}'", removed));
         }
     }
     
@@ -200,10 +197,8 @@ impl eframe::App for MyApp {
                 ui.group(|ui| {
                     ui.label(RichText::new("📝 Input saat ini:").strong());
                     ui.add_space(4.0);
-                    ui.colored_label(
-                        if self.input_buffer.is_empty() { egui::Color32::GRAY } else { egui::Color32::GREEN },
-                        if self.input_buffer.is_empty() { "(belum ada input)" } else { &self.input_buffer }
-                    );
+                    let text_color = if self.input_buffer.is_empty() { Color32::GRAY } else { Color32::GREEN };
+                    ui.colored_label(text_color, if self.input_buffer.is_empty() { "(belum ada input)" } else { &self.input_buffer });
                 });
                 
                 ui.add_space(8.0);
@@ -220,7 +215,8 @@ impl eframe::App for MyApp {
                     }
                     
                     if ui.button(RichText::new("💾 SAVE").size(18.0)).clicked() {
-                        match *self.pending_action.lock().unwrap() {
+                        let action = self.pending_action.lock().unwrap().clone();
+                        match action {
                             PendingAction::Add => {
                                 self.add_item();
                             }
@@ -255,7 +251,14 @@ impl eframe::App for MyApp {
                 ui.heading(RichText::new("📋 Data List").size(18.0));
                 ui.add_space(8.0);
                 
-                let items_clone = self.items.lock().unwrap().clone();
+                let items_clone = {
+                    if let Ok(items) = self.items.lock() {
+                        items.clone()
+                    } else {
+                        Vec::new()
+                    }
+                };
+                
                 if items_clone.is_empty() {
                     ui.label(RichText::new("  (kosong)").weak());
                 } else {

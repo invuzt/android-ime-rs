@@ -42,26 +42,42 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
         "AndroidIme Test App",
         options,
         Box::new(move |cc| {
-            struct Handler(Context);
-
+            // Handler untuk menerima update dari IME
+            struct Handler {
+                ctx: Context,
+                app_ptr: *mut MyApp, // Pointer ke MyApp untuk update teks
+            }
+            unsafe impl Send for Handler {}
+            
             impl AndroidImeEditableHandler for Handler {
                 fn text_updated(&self) {
-                    self.0.request_repaint();
+                    // Request repaint, nanti di update() kita sync teks
+                    self.ctx.request_repaint();
                 }
             }
 
             let mut env = java_wm.attach_current_thread()?;
             let context = AndroidImeContext::new(&mut env, &activity)?;
-            let editable = AndroidImeEditable::new(&context, Handler(cc.egui_ctx.clone()));
+            
+            // Buat dulu app kosong
+            let mut app = MyApp {
+                log: VecDeque::new(),
+                editable: None,
+                input_text: String::new(),
+                input_focused: false,
+            };
+            
+            // Buat editable dengan handler
+            let handler = Handler {
+                ctx: cc.egui_ctx.clone(),
+                app_ptr: &mut app as *mut MyApp,
+            };
+            let editable = AndroidImeEditable::new(&context, handler);
+            app.editable = Some(editable);
 
             cc.egui_ctx.set_zoom_factor(scale_factor);
 
-            Ok(Box::new(MyApp {
-                log: Default::default(),
-                editable,
-                input_text: String::new(),
-                input_focused: false,
-            }))
+            Ok(Box::new(app))
         }),
     );
     result.map_err(|e| anyhow!("{e:?}"))
@@ -70,14 +86,29 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
 ////////////////////////////////////////////////////////////////////////////////
 pub struct MyApp {
     log: VecDeque<String>,
-    editable: AndroidImeEditable,
+    editable: Option<AndroidImeEditable>,
     input_text: String,
     input_focused: bool,
+}
+
+impl MyApp {
+    fn sync_text_from_ime(&mut self) {
+        if let Some(editable) = &self.editable {
+            let new_text = editable.content().text.to_string();
+            if self.input_text != new_text {
+                self.input_text = new_text;
+                self.log.push_front("📥 Teks update dari IME".to_string());
+            }
+        }
+    }
 }
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &Context, frame: &mut Frame) {
         let _ = frame;
+        
+        // Sinkronkan teks dari IME setiap frame
+        self.sync_text_from_ime();
 
         CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
@@ -94,20 +125,28 @@ impl eframe::App for MyApp {
                 // Handle focus: munculkan keyboard saat diklik
                 if response.clicked() && !self.input_focused {
                     self.input_focused = true;
-                    let _ = self.editable.show_soft_keyboard();
+                    if let Some(editable) = &mut self.editable {
+                        let _ = editable.show_soft_keyboard();
+                    }
                     self.log.push_front("🔽 Keyboard muncul".to_string());
                 }
 
                 // Handle lost focus: sembunyikan keyboard
                 if response.lost_focus() && self.input_focused {
                     self.input_focused = false;
-                    let _ = self.editable.hide_soft_keyboard();
+                    if let Some(editable) = &mut self.editable {
+                        let _ = editable.hide_soft_keyboard();
+                    }
                     self.log.push_front("🔼 Keyboard sembunyi".to_string());
                 }
 
-                // Log perubahan teks
+                // Kirim teks ke IME saat user mengetik langsung
                 if response.changed() {
-                    self.log.push_front(format!("✏️ Teks: {}", self.input_text));
+                    if let Some(editable) = &self.editable {
+                        // Update teks di IME
+                        let _ = editable.set_text(&self.input_text);
+                    }
+                    self.log.push_front(format!("✏️ Teks berubah: {}", self.input_text));
                 }
 
                 ui.add_space(16.0);
@@ -117,15 +156,22 @@ impl eframe::App for MyApp {
                 // Tombol manual (opsional)
                 ui.horizontal(|ui| {
                     if ui.button("🔽 Show IME").clicked() {
-                        let _ = self.editable.show_soft_keyboard();
+                        if let Some(editable) = &mut self.editable {
+                            let _ = editable.show_soft_keyboard();
+                        }
                         self.input_focused = true;
                     }
                     if ui.button("🔼 Hide IME").clicked() {
-                        let _ = self.editable.hide_soft_keyboard();
+                        if let Some(editable) = &mut self.editable {
+                            let _ = editable.hide_soft_keyboard();
+                        }
                         self.input_focused = false;
                     }
                     if ui.button("🗑 Clear").clicked() {
                         self.input_text.clear();
+                        if let Some(editable) = &self.editable {
+                            let _ = editable.set_text("");
+                        }
                         self.log.push_front("Cleared".to_string());
                     }
                 });

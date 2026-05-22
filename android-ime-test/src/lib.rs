@@ -6,7 +6,7 @@ use eframe::egui::{CentralPanel, Context, RichText, ScrollArea, TextEdit};
 use eframe::Frame;
 use jni::objects::JObject;
 use jni::JavaVM;
-use log::error;
+use log::{error, info};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -40,7 +40,6 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
         ..Default::default()
     };
 
-    // Shared state antara IME handler dan App
     let shared_text = Arc::new(Mutex::new(String::new()));
 
     let result = eframe::run_native(
@@ -54,8 +53,39 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
 
             impl AndroidImeEditableHandler for Handler {
                 fn text_updated(&self) {
-                    // Request repaint, nanti teks dibaca dari shared_text
+                    info!(">>> text_updated() CALLED! <<<");
                     self.ctx.request_repaint();
+                }
+                
+                fn commit_text(&self, text: &str, new_cursor_position: isize) -> bool {
+                    info!(">>> commit_text: '{}', cursor: {} <<<", text, new_cursor_position);
+                    if let Ok(mut shared) = self.shared_text.lock() {
+                        *shared = text.to_string();
+                        info!(">>> shared_text sekarang: '{}' <<<", shared);
+                    }
+                    self.ctx.request_repaint();
+                    true
+                }
+                
+                fn set_composing_text(&self, input: &str, new_cursor_position: isize) -> bool {
+                    info!(">>> set_composing_text: '{}' <<<", input);
+                    if let Ok(mut shared) = self.shared_text.lock() {
+                        *shared = input.to_string();
+                    }
+                    self.ctx.request_repaint();
+                    true
+                }
+                
+                fn delete_surrounding_text(&self, before: usize, after: usize) -> bool {
+                    info!(">>> delete_surrounding_text: before={}, after={} <<<", before, after);
+                    if let Ok(mut shared) = self.shared_text.lock() {
+                        let len = shared.len();
+                        if before <= len {
+                            shared.truncate(len - before);
+                        }
+                    }
+                    self.ctx.request_repaint();
+                    true
                 }
             }
 
@@ -93,20 +123,11 @@ pub struct MyApp {
 
 impl MyApp {
     fn sync_text_from_ime(&mut self) {
-        // Baca teks dari shared_text (diupdate oleh IME)
-        if let Ok(mut shared) = self.shared_text.lock() {
+        if let Ok(shared) = self.shared_text.lock() {
             if self.input_text != *shared {
                 self.input_text = shared.clone();
-                self.log.push_front("📥 Teks update dari IME".to_string());
-            }
-        }
-    }
-    
-    fn sync_text_to_ime(&mut self) {
-        // Kirim teks ke shared_text (akan dibaca IME)
-        if let Ok(mut shared) = self.shared_text.lock() {
-            if *shared != self.input_text {
-                *shared = self.input_text.clone();
+                self.log.push_front(format!("📥 Teks dari IME: '{}'", self.input_text));
+                info!(">>> UI sync: input_text = '{}' <<<", self.input_text);
             }
         }
     }
@@ -116,7 +137,6 @@ impl eframe::App for MyApp {
     fn update(&mut self, ctx: &Context, frame: &mut Frame) {
         let _ = frame;
         
-        // Sinkronkan teks dari IME setiap frame
         self.sync_text_from_ime();
 
         CentralPanel::default().show(ctx, |ui| {
@@ -126,21 +146,19 @@ impl eframe::App for MyApp {
                 ui.heading("📝 Input Field (klik untuk mengetik):");
                 ui.add_space(8.0);
 
-                // TextEdit input field
                 let text_edit = TextEdit::singleline(&mut self.input_text)
                     .hint_text("Ketik di sini...");
                 let response = ui.add(text_edit);
 
-                // Handle focus: munculkan keyboard saat diklik
                 if response.clicked() && !self.input_focused {
                     self.input_focused = true;
                     if let Some(editable) = &mut self.editable {
                         let _ = editable.show_soft_keyboard();
                     }
                     self.log.push_front("🔽 Keyboard muncul".to_string());
+                    info!(">>> Keyboard shown <<<");
                 }
 
-                // Handle lost focus: sembunyikan keyboard
                 if response.lost_focus() && self.input_focused {
                     self.input_focused = false;
                     if let Some(editable) = &mut self.editable {
@@ -149,9 +167,11 @@ impl eframe::App for MyApp {
                     self.log.push_front("🔼 Keyboard sembunyi".to_string());
                 }
 
-                // Kirim teks ke IME saat user mengetik langsung
                 if response.changed() {
-                    self.sync_text_to_ime();
+                    // Update shared_text saat user ngetik via keyboard fisik (bukan IME)
+                    if let Ok(mut shared) = self.shared_text.lock() {
+                        *shared = self.input_text.clone();
+                    }
                     self.log.push_front(format!("✏️ Teks berubah: {}", self.input_text));
                 }
 
@@ -159,7 +179,6 @@ impl eframe::App for MyApp {
                 ui.separator();
                 ui.add_space(8.0);
 
-                // Tombol manual (opsional)
                 ui.horizontal(|ui| {
                     if ui.button("🔽 Show IME").clicked() {
                         if let Some(editable) = &mut self.editable {
@@ -175,7 +194,9 @@ impl eframe::App for MyApp {
                     }
                     if ui.button("🗑 Clear").clicked() {
                         self.input_text.clear();
-                        self.sync_text_to_ime();
+                        if let Ok(mut shared) = self.shared_text.lock() {
+                            shared.clear();
+                        }
                         self.log.push_front("Cleared".to_string());
                     }
                 });

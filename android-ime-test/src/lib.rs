@@ -8,6 +8,8 @@ use jni::objects::JObject;
 use jni::JavaVM;
 use log::error;
 use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::Mutex;
 use winit::platform::android::activity::AndroidApp;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -38,20 +40,21 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
         ..Default::default()
     };
 
+    // Shared state antara IME handler dan App
+    let shared_text = Arc::new(Mutex::new(String::new()));
+
     let result = eframe::run_native(
         "AndroidIme Test App",
         options,
         Box::new(move |cc| {
-            // Handler untuk menerima update dari IME
             struct Handler {
                 ctx: Context,
-                app_ptr: *mut MyApp, // Pointer ke MyApp untuk update teks
+                shared_text: Arc<Mutex<String>>,
             }
-            unsafe impl Send for Handler {}
-            
+
             impl AndroidImeEditableHandler for Handler {
                 fn text_updated(&self) {
-                    // Request repaint, nanti di update() kita sync teks
+                    // Request repaint, nanti teks dibaca dari shared_text
                     self.ctx.request_repaint();
                 }
             }
@@ -59,25 +62,21 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
             let mut env = java_wm.attach_current_thread()?;
             let context = AndroidImeContext::new(&mut env, &activity)?;
             
-            // Buat dulu app kosong
-            let mut app = MyApp {
-                log: VecDeque::new(),
-                editable: None,
-                input_text: String::new(),
-                input_focused: false,
-            };
-            
-            // Buat editable dengan handler
             let handler = Handler {
                 ctx: cc.egui_ctx.clone(),
-                app_ptr: &mut app as *mut MyApp,
+                shared_text: shared_text.clone(),
             };
             let editable = AndroidImeEditable::new(&context, handler);
-            app.editable = Some(editable);
 
             cc.egui_ctx.set_zoom_factor(scale_factor);
 
-            Ok(Box::new(app))
+            Ok(Box::new(MyApp {
+                log: VecDeque::new(),
+                editable: Some(editable),
+                input_text: String::new(),
+                input_focused: false,
+                shared_text: shared_text.clone(),
+            }))
         }),
     );
     result.map_err(|e| anyhow!("{e:?}"))
@@ -89,15 +88,25 @@ pub struct MyApp {
     editable: Option<AndroidImeEditable>,
     input_text: String,
     input_focused: bool,
+    shared_text: Arc<Mutex<String>>,
 }
 
 impl MyApp {
     fn sync_text_from_ime(&mut self) {
-        if let Some(editable) = &self.editable {
-            let new_text = editable.content().text.to_string();
-            if self.input_text != new_text {
-                self.input_text = new_text;
+        // Baca teks dari shared_text (diupdate oleh IME)
+        if let Ok(mut shared) = self.shared_text.lock() {
+            if self.input_text != *shared {
+                self.input_text = shared.clone();
                 self.log.push_front("📥 Teks update dari IME".to_string());
+            }
+        }
+    }
+    
+    fn sync_text_to_ime(&mut self) {
+        // Kirim teks ke shared_text (akan dibaca IME)
+        if let Ok(mut shared) = self.shared_text.lock() {
+            if *shared != self.input_text {
+                *shared = self.input_text.clone();
             }
         }
     }
@@ -142,10 +151,7 @@ impl eframe::App for MyApp {
 
                 // Kirim teks ke IME saat user mengetik langsung
                 if response.changed() {
-                    if let Some(editable) = &self.editable {
-                        // Update teks di IME
-                        let _ = editable.set_text(&self.input_text);
-                    }
+                    self.sync_text_to_ime();
                     self.log.push_front(format!("✏️ Teks berubah: {}", self.input_text));
                 }
 
@@ -169,9 +175,7 @@ impl eframe::App for MyApp {
                     }
                     if ui.button("🗑 Clear").clicked() {
                         self.input_text.clear();
-                        if let Some(editable) = &self.editable {
-                            let _ = editable.set_text("");
-                        }
+                        self.sync_text_to_ime();
                         self.log.push_front("Cleared".to_string());
                     }
                 });

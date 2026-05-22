@@ -2,7 +2,7 @@ use android_ime::{
     AndroidImeContext, AndroidImeEditable, AndroidImeEditableHandler,
 };
 use anyhow::anyhow;
-use eframe::egui::{CentralPanel, Context, RichText, ScrollArea, TextEdit};
+use eframe::egui::{CentralPanel, Context, RichText, ScrollArea, TopBottomPanel};
 use eframe::Frame;
 use jni::objects::JObject;
 use jni::JavaVM;
@@ -17,7 +17,7 @@ use winit::platform::android::activity::AndroidApp;
 fn android_main(android_app: AndroidApp) {
     android_logger::init_once(
         android_logger::Config::default()
-            .with_tag("RUST_ANDROID_IME")
+            .with_tag("CRUD_IME")
             .with_max_level(log::LevelFilter::Debug),
     );
 
@@ -41,51 +41,29 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
     };
 
     let shared_text = Arc::new(Mutex::new(String::new()));
+    let pending_action = Arc::new(Mutex::new(PendingAction::None));
+    let items = Arc::new(Mutex::new(Vec::<String>::new()));
+    let edit_index = Arc::new(Mutex::new(0usize));
 
     let result = eframe::run_native(
-        "AndroidIme Test App",
+        "CRUD App - IME Test",
         options,
         Box::new(move |cc| {
             struct Handler {
                 ctx: Context,
                 shared_text: Arc<Mutex<String>>,
+                pending_action: Arc<Mutex<PendingAction>>,
+                items: Arc<Mutex<Vec<String>>>,
+                edit_index: Arc<Mutex<usize>>,
             }
 
             impl AndroidImeEditableHandler for Handler {
                 fn text_updated(&self) {
                     info!(">>> text_updated() CALLED! <<<");
-                    self.ctx.request_repaint();
-                }
-                
-                fn commit_text(&self, text: &str, new_cursor_position: isize) -> bool {
-                    info!(">>> commit_text: '{}', cursor: {} <<<", text, new_cursor_position);
-                    if let Ok(mut shared) = self.shared_text.lock() {
-                        *shared = text.to_string();
-                        info!(">>> shared_text sekarang: '{}' <<<", shared);
+                    if let Ok(text) = self.shared_text.lock() {
+                        info!(">>> Current text: '{}' <<<", text);
                     }
                     self.ctx.request_repaint();
-                    true
-                }
-                
-                fn set_composing_text(&self, input: &str, new_cursor_position: isize) -> bool {
-                    info!(">>> set_composing_text: '{}' <<<", input);
-                    if let Ok(mut shared) = self.shared_text.lock() {
-                        *shared = input.to_string();
-                    }
-                    self.ctx.request_repaint();
-                    true
-                }
-                
-                fn delete_surrounding_text(&self, before: usize, after: usize) -> bool {
-                    info!(">>> delete_surrounding_text: before={}, after={} <<<", before, after);
-                    if let Ok(mut shared) = self.shared_text.lock() {
-                        let len = shared.len();
-                        if before <= len {
-                            shared.truncate(len - before);
-                        }
-                    }
-                    self.ctx.request_repaint();
-                    true
                 }
             }
 
@@ -95,6 +73,9 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
             let handler = Handler {
                 ctx: cc.egui_ctx.clone(),
                 shared_text: shared_text.clone(),
+                pending_action: pending_action.clone(),
+                items: items.clone(),
+                edit_index: edit_index.clone(),
             };
             let editable = AndroidImeEditable::new(&context, handler);
 
@@ -103,32 +84,95 @@ fn try_android_main(android_app: AndroidApp) -> anyhow::Result<()> {
             Ok(Box::new(MyApp {
                 log: VecDeque::new(),
                 editable: Some(editable),
-                input_text: String::new(),
-                input_focused: false,
                 shared_text: shared_text.clone(),
+                pending_action: pending_action.clone(),
+                items: items.clone(),
+                edit_index: edit_index.clone(),
+                input_buffer: String::new(),
             }))
         }),
     );
     result.map_err(|e| anyhow!("{e:?}"))
 }
 
+#[derive(Clone, PartialEq)]
+enum PendingAction {
+    None,
+    Add,
+    Edit(usize),
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 pub struct MyApp {
     log: VecDeque<String>,
     editable: Option<AndroidImeEditable>,
-    input_text: String,
-    input_focused: bool,
     shared_text: Arc<Mutex<String>>,
+    pending_action: Arc<Mutex<PendingAction>>,
+    items: Arc<Mutex<Vec<String>>>,
+    edit_index: Arc<Mutex<usize>>,
+    input_buffer: String,
 }
 
 impl MyApp {
     fn sync_text_from_ime(&mut self) {
-        if let Ok(shared) = self.shared_text.lock() {
-            if self.input_text != *shared {
-                self.input_text = shared.clone();
-                self.log.push_front(format!("📥 Teks dari IME: '{}'", self.input_text));
-                info!(">>> UI sync: input_text = '{}' <<<", self.input_text);
+        if let Ok(mut shared) = self.shared_text.lock() {
+            if self.input_buffer != *shared {
+                self.input_buffer = shared.clone();
+                self.log.push_front(format!("📥 Input: '{}'", self.input_buffer));
             }
+        }
+    }
+    
+    fn clear_input(&mut self) {
+        self.input_buffer.clear();
+        if let Ok(mut shared) = self.shared_text.lock() {
+            shared.clear();
+        }
+    }
+    
+    fn add_item(&mut self) {
+        if !self.input_buffer.is_empty() {
+            if let Ok(mut items) = self.items.lock() {
+                items.push(self.input_buffer.clone());
+                self.log.push_front(format!("✅ Added: '{}'", self.input_buffer));
+                self.clear_input();
+            }
+        }
+    }
+    
+    fn update_item(&mut self, index: usize) {
+        if !self.input_buffer.is_empty() {
+            if let Ok(mut items) = self.items.lock() {
+                if index < items.len() {
+                    let old = items[index].clone();
+                    items[index] = self.input_buffer.clone();
+                    self.log.push_front(format!("✏️ Updated: '{}' -> '{}'", old, self.input_buffer));
+                    self.clear_input();
+                }
+            }
+        }
+    }
+    
+    fn delete_item(&mut self, index: usize) {
+        if let Ok(mut items) = self.items.lock() {
+            if index < items.len() {
+                let removed = items.remove(index);
+                self.log.push_front(format!("🗑️ Deleted: '{}'", removed));
+            }
+        }
+    }
+    
+    fn show_keyboard(&mut self) {
+        if let Some(editable) = &mut self.editable {
+            let _ = editable.show_soft_keyboard();
+            self.log.push_front("🔽 Keyboard muncul".to_string());
+        }
+    }
+    
+    fn hide_keyboard(&mut self) {
+        if let Some(editable) = &mut self.editable {
+            let _ = editable.hide_soft_keyboard();
+            self.log.push_front("🔼 Keyboard sembunyi".to_string());
         }
     }
 }
@@ -139,79 +183,122 @@ impl eframe::App for MyApp {
         
         self.sync_text_from_ime();
 
-        CentralPanel::default().show(ctx, |ui| {
+        TopBottomPanel::top("header").show(ctx, |ui| {
+            ui.add_space(8.0);
             ui.vertical_centered(|ui| {
-                ui.add_space(16.0);
+                ui.heading(RichText::new("📱 CRUD App - Keyboard Input").size(20.0));
+                ui.label("Tanpa TextEdit - Input dari keyboard langsung");
+            });
+            ui.add_space(8.0);
+        });
 
-                ui.heading("📝 Input Field (klik untuk mengetik):");
+        CentralPanel::default().show(ctx, |ui| {
+            ui.vertical(|ui| {
                 ui.add_space(8.0);
-
-                let text_edit = TextEdit::singleline(&mut self.input_text)
-                    .hint_text("Ketik di sini...");
-                let response = ui.add(text_edit);
-
-                if response.clicked() && !self.input_focused {
-                    self.input_focused = true;
-                    if let Some(editable) = &mut self.editable {
-                        let _ = editable.show_soft_keyboard();
-                    }
-                    self.log.push_front("🔽 Keyboard muncul".to_string());
-                    info!(">>> Keyboard shown <<<");
-                }
-
-                if response.lost_focus() && self.input_focused {
-                    self.input_focused = false;
-                    if let Some(editable) = &mut self.editable {
-                        let _ = editable.hide_soft_keyboard();
-                    }
-                    self.log.push_front("🔼 Keyboard sembunyi".to_string());
-                }
-
-                if response.changed() {
-                    // Update shared_text saat user ngetik via keyboard fisik (bukan IME)
-                    if let Ok(mut shared) = self.shared_text.lock() {
-                        *shared = self.input_text.clone();
-                    }
-                    self.log.push_front(format!("✏️ Teks berubah: {}", self.input_text));
-                }
-
-                ui.add_space(16.0);
-                ui.separator();
+                
+                // Current input display
+                ui.group(|ui| {
+                    ui.label(RichText::new("📝 Input saat ini:").strong());
+                    ui.add_space(4.0);
+                    ui.colored_label(
+                        if self.input_buffer.is_empty() { egui::Color32::GRAY } else { egui::Color32::GREEN },
+                        if self.input_buffer.is_empty() { "(belum ada input)" } else { &self.input_buffer }
+                    );
+                });
+                
                 ui.add_space(8.0);
-
+                
+                // Action buttons
                 ui.horizontal(|ui| {
-                    if ui.button("🔽 Show IME").clicked() {
-                        if let Some(editable) = &mut self.editable {
-                            let _ = editable.show_soft_keyboard();
+                    if ui.button(RichText::new("➕ ADD").size(18.0)).clicked() {
+                        self.clear_input();
+                        if let Ok(mut action) = self.pending_action.lock() {
+                            *action = PendingAction::Add;
                         }
-                        self.input_focused = true;
+                        self.show_keyboard();
+                        self.log.push_front("📝 Mode: ADD - ketik lalu tekan Save".to_string());
                     }
-                    if ui.button("🔼 Hide IME").clicked() {
-                        if let Some(editable) = &mut self.editable {
-                            let _ = editable.hide_soft_keyboard();
+                    
+                    if ui.button(RichText::new("💾 SAVE").size(18.0)).clicked() {
+                        match *self.pending_action.lock().unwrap() {
+                            PendingAction::Add => {
+                                self.add_item();
+                            }
+                            PendingAction::Edit(idx) => {
+                                self.update_item(idx);
+                            }
+                            PendingAction::None => {
+                                self.log.push_front("⚠️ Tidak ada action pending. Klik Add atau Edit dulu.".to_string());
+                            }
                         }
-                        self.input_focused = false;
+                        if let Ok(mut action) = self.pending_action.lock() {
+                            *action = PendingAction::None;
+                        }
+                        self.hide_keyboard();
                     }
-                    if ui.button("🗑 Clear").clicked() {
-                        self.input_text.clear();
-                        if let Ok(mut shared) = self.shared_text.lock() {
-                            shared.clear();
+                    
+                    if ui.button(RichText::new("❌ CANCEL").size(18.0)).clicked() {
+                        if let Ok(mut action) = self.pending_action.lock() {
+                            *action = PendingAction::None;
                         }
-                        self.log.push_front("Cleared".to_string());
+                        self.clear_input();
+                        self.hide_keyboard();
+                        self.log.push_front("❌ Dibatalin".to_string());
                     }
                 });
-
-                ui.add_space(16.0);
+                
+                ui.add_space(12.0);
                 ui.separator();
                 ui.add_space(8.0);
-
-                ui.heading("📄 Log:");
+                
+                // List items (CRUD display)
+                ui.heading(RichText::new("📋 Data List").size(18.0));
+                ui.add_space(8.0);
+                
+                let items_clone = self.items.lock().unwrap().clone();
+                if items_clone.is_empty() {
+                    ui.label(RichText::new("  (kosong)").weak());
+                } else {
+                    ScrollArea::vertical()
+                        .max_height(400.0)
+                        .show(ui, |ui| {
+                            for (i, item) in items_clone.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(format!("{}", i + 1)).monospace());
+                                    ui.label(RichText::new(item).strong());
+                                    ui.add_space(10.0);
+                                    
+                                    if ui.button("✏️ Edit").clicked() {
+                                        self.input_buffer = item.clone();
+                                        if let Ok(mut shared) = self.shared_text.lock() {
+                                            *shared = item.clone();
+                                        }
+                                        if let Ok(mut action) = self.pending_action.lock() {
+                                            *action = PendingAction::Edit(i);
+                                        }
+                                        self.show_keyboard();
+                                        self.log.push_front(format!("✏️ Mode: EDIT '{}' - ketik lalu tekan Save", item));
+                                    }
+                                    
+                                    if ui.button("🗑️ Delete").clicked() {
+                                        self.delete_item(i);
+                                    }
+                                });
+                                ui.add_space(4.0);
+                            }
+                        });
+                }
+                
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+                
+                // Log area
+                ui.heading("📄 Event Log:");
                 ScrollArea::vertical()
-                    .max_height(300.0)
+                    .max_height(150.0)
                     .show(ui, |ui| {
-                        ui.label(format!("📌 Teks saat ini: \"{}\"", self.input_text));
-                        ui.add_space(8.0);
-                        for msg in self.log.iter().take(15) {
+                        for msg in self.log.iter().take(10) {
                             ui.label(RichText::new(msg).small());
                         }
                         if self.log.is_empty() {
